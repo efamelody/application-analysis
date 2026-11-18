@@ -1,6 +1,29 @@
 // JobTracker Scraper — MV3 background service worker
-// Set your deployed app URL here (or via chrome.storage in future versions).
+// Set your deployed app URL here or store { appUrl, extensionAccessToken } in chrome.storage.local.
 const APP_URL = "https://your-app.vercel.app";
+// Set this only in your private local extension copy (or chrome.storage.local). Do not publish it.
+const EXTENSION_ACCESS_TOKEN = "set-your-extension-access-token";
+
+async function getExtensionConfig() {
+  try {
+    const stored = await chrome.storage.local.get([
+      "appUrl",
+      "extensionAccessToken",
+    ]);
+    const appUrl = (stored.appUrl || APP_URL || "").trim().replace(/\/+$/, "");
+    const token = (
+      stored.extensionAccessToken ||
+      EXTENSION_ACCESS_TOKEN ||
+      ""
+    ).trim();
+    return { appUrl, token };
+  } catch {
+    return {
+      appUrl: APP_URL.trim().replace(/\/+$/, ""),
+      token: EXTENSION_ACCESS_TOKEN.trim(),
+    };
+  }
+}
 
 function showToast(tabId, message, isError = false) {
   chrome.scripting.executeScript({
@@ -75,9 +98,13 @@ chrome.action.onClicked.addListener(async (tab) => {
   }
 
   try {
-    const response = await fetch(`${APP_URL}/api/applications/create`, {
+    const { appUrl, token } = await getExtensionConfig();
+    const response = await fetch(`${appUrl}/api/applications/create`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-extension-token": token,
+      },
       body: JSON.stringify(payload),
     });
     const json = await response.json().catch(() => ({}));

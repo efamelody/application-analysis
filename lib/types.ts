@@ -1,4 +1,7 @@
 export type AppStatus =
+  | "discovered"
+  | "reviewing"
+  | "shortlisted"
   | "applied"
   | "viewed"
   | "interviewing"
@@ -15,6 +18,12 @@ export interface Application {
   job_url: string | null;
   job_description: string | null;
   salary_range: string | null;
+  source: string | null;
+  location: string | null;
+  is_remote: boolean;
+  training_signals: string | null;
+  cv_suggestions: string | null;
+  discovered_at: string | null;
   status: AppStatus;
   match_score: number | null;
   strengths: string | null;

@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabase";
+import { getDb } from "@/lib/db";
 import { generateJson } from "@/lib/gemini";
-import { GENERIC_COVER_LETTER, CANDIDATE_PROFILE } from "@/lib/coverLetter";
+import { buildGenericCoverLetter } from "@/lib/coverLetter";
+import { getCandidateProfile, profilePromptText } from "@/lib/profile";
 import { createApplicationSchema } from "@/lib/validation";
+import { safeListingUrl } from "@/lib/gmail";
 import type { GapAnalysis } from "@/lib/types";
+import { isAppRequestAuthorized } from "@/lib/auth";
 
 export async function POST(req: Request) {
   try {
+    if (!isAppRequestAuthorized(req, true)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     const body = await req.json();
     const parsed = createApplicationSchema.safeParse(body);
     if (!parsed.success) {
@@ -15,19 +19,24 @@ export async function POST(req: Request) {
         { status: 400 }
       );
     }
-    const { company_name, job_title, job_url, job_description, salary_range } =
+    const { company_name, job_title, job_url: rawJobUrl, job_description, salary_range } =
       parsed.data;
+    const job_url = rawJobUrl ? safeListingUrl(rawJobUrl) : "";
+    if (rawJobUrl && !job_url) {
+      return NextResponse.json(
+        { error: "Invalid input", details: { fieldErrors: { job_url: ["Must be a valid http or https job listing URL"] } } },
+        { status: 400 }
+      );
+    }
 
-    const supabase = getSupabaseAdmin();
+    const sql = getDb();
+    const { profile, evidence } = await getCandidateProfile();
 
     // Dedupe: same URL already tracked
     if (job_url) {
-      const { data: existing } = await supabase
-        .from("applications")
-        .select("id")
-        .eq("job_url", job_url)
-        .limit(1)
-        .maybeSingle();
+      const [existing] = (await sql`
+        SELECT id FROM applications WHERE job_url = ${job_url} LIMIT 1
+      `) as unknown as { id: string }[];
       if (existing) {
         return NextResponse.json(
           { success: false, error: "Already tracked", id: existing.id },
@@ -41,7 +50,7 @@ export async function POST(req: Request) {
     try {
       const prompt = `
 You are an expert technical hiring advisor. Analyze this job description against the candidate profile below.
-Candidate Profile: ${CANDIDATE_PROFILE}
+Candidate Profile: ${profilePromptText(profile, evidence)}
 
 Job Title: ${job_title}
 Company: ${company_name}
@@ -66,27 +75,20 @@ Return ONLY a clean JSON object with this exact structure:
       console.error("Gap analysis failed, saving without scores:", aiErr);
     }
 
-    const { data, error } = await supabase
-      .from("applications")
-      .insert({
-        company_name,
-        job_title,
-        job_url: job_url || null,
-        job_description: job_description || null,
-        salary_range: salary_range || null,
-        status: "applied",
-        match_score: gap?.match_score ?? null,
-        strengths: gap?.strengths ?? null,
-        gaps_and_risks: gap?.gaps_and_risks ?? null,
-        improvement_action_item: gap?.improvement_action_item ?? null,
-        cover_letter_type: "generic",
-        cover_letter_content: GENERIC_COVER_LETTER,
-      })
-      .select()
-      .single();
-
-    if (error) throw error;
-    return NextResponse.json({ success: true, application: data });
+    const [application] = (await sql`
+      INSERT INTO applications (
+        company_name, job_title, job_url, job_description, salary_range,
+        status, match_score, strengths, gaps_and_risks,
+        improvement_action_item, cover_letter_type, cover_letter_content
+      ) VALUES (
+        ${company_name}, ${job_title}, ${job_url || null},
+        ${job_description || null}, ${salary_range || null}, 'discovered',
+        ${gap?.match_score ?? null}, ${gap?.strengths ?? null},
+        ${gap?.gaps_and_risks ?? null}, ${gap?.improvement_action_item ?? null},
+        'generic', ${buildGenericCoverLetter(profile.full_name)}
+      ) RETURNING *
+    `) as unknown as Record<string, unknown>[];
+    return NextResponse.json({ success: true, application });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });

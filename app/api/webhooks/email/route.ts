@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getSupabaseAdmin } from "@/lib/supabase";
+import { getDb } from "@/lib/db";
 import { generateJson } from "@/lib/gemini";
 import { emailWebhookSchema } from "@/lib/validation";
 
@@ -42,14 +42,12 @@ export async function POST(req: Request) {
   try {
     // Authenticate inbound provider
     const secret = process.env.EMAIL_WEBHOOK_SECRET;
-    if (secret) {
-      const provided =
-        req.headers.get("x-webhook-secret") ||
-        req.headers.get("x-mailgun-webhook-secret") ||
-        new URL(req.url).searchParams.get("secret");
-      if (provided !== secret) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+    const provided =
+      req.headers.get("x-webhook-secret") ||
+      req.headers.get("x-mailgun-webhook-secret") ||
+      new URL(req.url).searchParams.get("secret");
+    if (!secret || provided !== secret) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const body = await req.json().catch(() => ({}));
@@ -86,25 +84,22 @@ Return ONLY JSON:
     }>(prompt);
 
     if (company_name && VALID_STATUSES.has(status)) {
-      const supabase = getSupabaseAdmin();
+      const sql = getDb();
       // Update the most recent open application for this company
-      const { data: match } = await supabase
-        .from("applications")
-        .select("id")
-        .ilike("company_name", `%${company_name.trim()}%`)
-        .in("status", ["applied", "viewed", "interviewing"])
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      const [match] = (await sql`
+        SELECT id FROM applications
+        WHERE company_name ILIKE ${`%${company_name.trim()}%`}
+          AND status IN ('applied', 'viewed', 'interviewing')
+        ORDER BY created_at DESC LIMIT 1
+      `) as unknown as Array<{ id: string }>;
 
       if (match) {
-        await supabase
-          .from("applications")
-          .update({
-            status,
-            last_email_snippet: emailText.slice(0, 300),
-          })
-          .eq("id", match.id);
+        await sql`
+          UPDATE applications
+          SET status = ${status}::app_status,
+              last_email_snippet = ${emailText.slice(0, 300)}
+          WHERE id = ${match.id}
+        `;
       }
     }
 

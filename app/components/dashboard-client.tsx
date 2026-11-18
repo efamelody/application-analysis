@@ -2,8 +2,12 @@
 
 import { useMemo, useState } from "react";
 import type { Application, AppStatus } from "@/lib/types";
+import { getReviewWorkflowActions } from "@/lib/validation";
 
 const STATUS_STYLES: Record<AppStatus, string> = {
+  discovered: "bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-200",
+  reviewing: "bg-indigo-100 text-indigo-800 dark:bg-indigo-900 dark:text-indigo-200",
+  shortlisted: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
   applied: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
   viewed: "bg-cyan-100 text-cyan-800 dark:bg-cyan-900 dark:text-cyan-200",
   interviewing:
@@ -13,6 +17,15 @@ const STATUS_STYLES: Record<AppStatus, string> = {
   rejected: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
   closed: "bg-zinc-200 text-zinc-700 dark:bg-zinc-700 dark:text-zinc-200",
 };
+
+const ACTION_STYLES = {
+  primary:
+    "border-violet-600 bg-violet-600 text-white hover:bg-violet-700 dark:border-violet-500 dark:bg-violet-600 dark:hover:bg-violet-500",
+  danger:
+    "border-red-300 text-red-700 hover:bg-red-50 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-950",
+  neutral:
+    "border-zinc-300 text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800",
+} as const;
 
 export function StatusBadge({ status }: { status: AppStatus }) {
   return (
@@ -39,7 +52,13 @@ function ScoreBar({ score }: { score: number | null }) {
   );
 }
 
-function CoverLetterPanel({ app }: { app: Application }) {
+function CoverLetterPanel({
+  app,
+  onUpdate,
+}: {
+  app: Application;
+  onUpdate?: (updated: Application) => void;
+}) {
   const [letter, setLetter] = useState(app.cover_letter_content ?? "");
   const [type, setType] = useState(app.cover_letter_type);
   const [loading, setLoading] = useState(false);
@@ -54,9 +73,10 @@ function CoverLetterPanel({ app }: { app: Application }) {
         body: JSON.stringify({ id: app.id }),
       });
       const json = await res.json();
-      if (json.success) {
-        setLetter(json.application.cover_letter_content);
+      if (json.success && json.application) {
+        setLetter(json.application.cover_letter_content ?? "");
         setType("custom");
+        onUpdate?.(json.application as Application);
       } else {
         alert(json.error ?? "Generation failed");
       }
@@ -102,8 +122,40 @@ function CoverLetterPanel({ app }: { app: Application }) {
   );
 }
 
-export function ApplicationCard({ app }: { app: Application }) {
+export function ApplicationCard({
+  app,
+  onUpdate,
+}: {
+  app: Application;
+  onUpdate?: (updated: Application) => void;
+}) {
   const [open, setOpen] = useState(false);
+  const [updatingStatus, setUpdatingStatus] = useState<AppStatus | null>(null);
+  const [statusError, setStatusError] = useState("");
+  const actions = getReviewWorkflowActions(app.status);
+
+  async function updateStatus(nextStatus: AppStatus) {
+    setUpdatingStatus(nextStatus);
+    setStatusError("");
+    try {
+      const res = await fetch("/api/applications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: app.id, status: nextStatus }),
+      });
+      const json = await res.json();
+      if (!res.ok || !json.success || !json.application) {
+        setStatusError(json.error ?? "Failed to update status");
+        return;
+      }
+      onUpdate?.(json.application as Application);
+    } catch {
+      setStatusError("Network error updating status");
+    } finally {
+      setUpdatingStatus(null);
+    }
+  }
+
   return (
     <article className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -115,6 +167,18 @@ export function ApplicationCard({ app }: { app: Application }) {
             {app.company_name}
             {app.salary_range ? ` · ${app.salary_range}` : ""}
           </p>
+          {(app.location || app.is_remote || app.source) && (
+            <p className="text-xs text-zinc-500">
+              {[app.location, app.is_remote ? "Remote" : null, app.source]
+                .filter(Boolean)
+                .join(" · ")}
+            </p>
+          )}
+          {app.training_signals && (
+            <p className="mt-1 text-xs text-emerald-700 dark:text-emerald-300">
+              Training signals: {app.training_signals}
+            </p>
+          )}
           {app.job_url && (
             <a
               href={app.job_url}
@@ -132,7 +196,7 @@ export function ApplicationCard({ app }: { app: Application }) {
         </div>
       </div>
 
-      {(app.strengths || app.gaps_and_risks) && (
+      {(app.strengths || app.gaps_and_risks || app.improvement_action_item) && (
         <div className="mt-3 grid gap-2 text-xs sm:grid-cols-3">
           {app.strengths && (
             <div className="rounded-lg bg-green-50 p-2 dark:bg-green-950">
@@ -165,19 +229,53 @@ export function ApplicationCard({ app }: { app: Application }) {
         </div>
       )}
 
+      {app.cv_suggestions && (
+        <div className="mt-2 rounded-lg bg-violet-50 p-2 text-xs dark:bg-violet-950">
+          <p className="font-semibold text-violet-800 dark:text-violet-200">
+            CV suggestions
+          </p>
+          <p className="text-violet-900 dark:text-violet-100">
+            {app.cv_suggestions}
+          </p>
+        </div>
+      )}
+
       {app.last_email_snippet && (
         <p className="mt-2 truncate text-xs italic text-zinc-500">
           Last email: {app.last_email_snippet}
         </p>
       )}
 
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="mt-3 text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-300"
-      >
-        {open ? "Hide cover letter ▲" : "Show cover letter ▼"}
-      </button>
-      {open && <CoverLetterPanel app={app} />}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {actions.map((action) => (
+            <button
+              key={action.status}
+              type="button"
+              disabled={updatingStatus !== null}
+              onClick={() => updateStatus(action.status)}
+              className={`rounded-md border px-2.5 py-1 text-xs font-medium transition disabled:opacity-50 ${ACTION_STYLES[action.tone]}`}
+            >
+              {updatingStatus === action.status ? "Saving…" : action.label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-300"
+        >
+          {open ? "Hide cover letter ▲" : "Show cover letter ▼"}
+        </button>
+      </div>
+
+      {statusError && (
+        <p className="mt-2 text-xs text-red-600 dark:text-red-400">
+          {statusError}
+        </p>
+      )}
+
+      {open && <CoverLetterPanel app={app} onUpdate={onUpdate} />}
     </article>
   );
 }
@@ -189,9 +287,15 @@ export function DashboardClient({
   initial: Application[];
   notice?: string;
 }) {
-  const [apps] = useState<Application[]>(initial);
+  const [apps, setApps] = useState<Application[]>(initial);
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
+
+  function handleUpdateApplication(updated: Application) {
+    setApps((current) =>
+      current.map((item) => (item.id === updated.id ? updated : item))
+    );
+  }
 
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
@@ -222,6 +326,12 @@ export function DashboardClient({
             .map(([s, n]) => ` · ${s.replaceAll("_", " ")}: ${n}`)
             .join("")}
         </p>
+        <a
+          href="/profile"
+          className="mt-3 inline-block text-sm font-medium text-violet-600 hover:underline dark:text-violet-400"
+        >
+          Edit CV profile and project evidence →
+        </a>
         {notice && (
           <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
             {notice}
@@ -242,6 +352,9 @@ export function DashboardClient({
           className="rounded-lg border border-zinc-300 bg-transparent px-3 py-2 text-sm dark:border-zinc-700"
         >
           <option value="all">All statuses</option>
+          <option value="discovered">Discovered</option>
+          <option value="reviewing">Reviewing</option>
+          <option value="shortlisted">Shortlisted</option>
           <option value="applied">Applied</option>
           <option value="viewed">Viewed</option>
           <option value="interviewing">Interviewing</option>
@@ -259,7 +372,11 @@ export function DashboardClient({
       ) : (
         <div className="grid gap-3">
           {filtered.map((a) => (
-            <ApplicationCard key={a.id} app={a} />
+            <ApplicationCard
+              key={a.id}
+              app={a}
+              onUpdate={handleUpdateApplication}
+            />
           ))}
         </div>
       )}

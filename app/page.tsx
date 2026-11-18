@@ -1,34 +1,27 @@
 import { DashboardClient } from "./components/dashboard-client";
 import type { Application } from "@/lib/types";
+import { getDb } from "@/lib/db";
+import { connection } from "next/server";
+import { hasAppSession } from "@/lib/auth";
+import { redirect } from "next/navigation";
+
+export const instant = false;
 
 async function getApplications(): Promise<{
   applications: Application[];
   notice?: string;
 }> {
-  // Server-side fetch from our own API would need absolute URL; instead read
-  // directly only if configured. Fall back to empty so `npm run build` works
-  // without env vars (dashboard hydrates empty state, API fills in at runtime
-  // once deployed with env). For simplicity the client state starts here;
-  // live data flows through /api/applications at runtime via revalidation.
-  // We attempt a direct Supabase read when env is present.
   try {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!url || !key) {
+    if (!process.env.DATABASE_URL) {
       return {
         applications: [],
-        notice: "Supabase not configured — run supabase/migrations/001_applications.sql and set .env.local",
+        notice: "Neon not configured — run the migrations and set DATABASE_URL",
       };
     }
-    const { createClient } = await import("@supabase/supabase-js");
-    const supabase = createClient(url, key, { auth: { persistSession: false } });
-    const { data, error } = await supabase
-      .from("applications")
-      .select("*")
-      .order("created_at", { ascending: false })
-      .limit(200);
-    if (error) throw error;
-    return { applications: (data ?? []) as Application[] };
+    const applications = await getDb()`
+      SELECT * FROM applications ORDER BY created_at DESC LIMIT 200
+    `;
+    return { applications: applications as Application[] };
   } catch (e) {
     return {
       applications: [],
@@ -38,6 +31,8 @@ async function getApplications(): Promise<{
 }
 
 export default async function Home() {
+  await connection();
+  if (!(await hasAppSession())) redirect("/login");
   const { applications, notice } = await getApplications();
   return <DashboardClient initial={applications} notice={notice} />;
 }
